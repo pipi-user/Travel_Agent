@@ -1,46 +1,63 @@
-#用 LangGraph 把流程串起来
+"""LangGraph 编排：拿到 POI 池。"""
 from langgraph.graph import StateGraph, START, END
-from langchain_core.prompts import ChatPromptTemplate
+
 from .state import TravelState
-from .schemas import TravelRequest, DestinationList
-from .llm import get_llm
+from .schemas import TripRequest
+from .agents.destination import recommend_destinations
+from .agents.poi_collector import collect_pois
+from .memory.store import load_profile
+from .config import settings
+
+
+def load_memory(state: TravelState) -> dict:
+    uid = state.get("user_id") or settings.user_id
+    print(f"[DEBUG] load_memory: user_id={uid}")
+    return {"user_profile": load_profile(uid)}
+
 
 def parse_request(state: TravelState) -> dict:
-    """把前端表单转成结构化数据"""
-    req = TravelRequest(**state["request"])
-    return {"request": req.model_dump()}
+    print(f"[DEBUG] parse_request: state keys={list(state.keys())}")
+    req = TripRequest(**state["request"])
+    selected = state.get("selected_city") or req.dest_city or None
+    return {"request": req.model_dump(), "selected_city": selected}
 
-def recommend_destinations(state: TravelState) -> dict:
-    """根据需求推荐 3 个城市"""
-    llm = get_llm()
-    # 使用 json_mode 兼容 qwen
-    structured_llm = llm.with_structured_output(DestinationList, method="json_mode")
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", 
-         "你是一个资深旅游规划师。根据用户需求推荐3个目的地城市。"
-         "请以 JSON 格式输出，包含 destinations 数组。"
-         "每个城市给出：城市名(city)、推荐理由(reason，限30字内)、评分(score)、预估花费(estimated_cost)、天气(weather)。"),  # 👈 限制了30字
-        ("human", "出发地：{origin}\n预算：{budget}元\n天数：{days}天\n月份：{month}月\n偏好：{preferences}\n节奏：{pace}\n同行：{companions}"),
-    ])
+def route_after_parse(state: TravelState) -> str:
+    return "collect" if state.get("selected_city") else "recommend"
 
-    chain = prompt | structured_llm
-    result = chain.invoke(state["request"])
-    return {"candidates": [d.model_dump() for d in result.destinations]}
 
-def format_output(state: TravelState) -> dict:
-    """Day1 先空着，Day3 再丰富"""
-    return {}
+def collect_pois_node(state: TravelState) -> dict:
+    req = state["request"]
+    pool = collect_pois(
+        city=state["selected_city"],
+        preferences=req.get("preferences", []),
+        days=req.get("days", 3),
+        companions=req.get("companions", "独自"),
+        user_id=state.get("user_id", ""),   # ⭐ 传递
+    )
+    return {
+        "attractions": pool["attractions"],
+        "food": pool["foods"],
+        "accommodation": pool["hotels"],
+    }
 
-def build_graph():
+
+def build_explore_graph(checkpointer=None):
     builder = StateGraph(TravelState)
+    builder.add_node("load_memory", load_memory)
     builder.add_node("parse", parse_request)
     builder.add_node("recommend", recommend_destinations)
-    builder.add_node("format", format_output)
+    builder.add_node("collect", collect_pois_node)
 
-    builder.add_edge(START, "parse")
-    builder.add_edge("parse", "recommend")
-    builder.add_edge("recommend", "format")
-    builder.add_edge("format", END)
+    builder.add_edge(START, "load_memory")
+    builder.add_edge("load_memory", "parse")
+    builder.add_conditional_edges(
+        "parse", route_after_parse,
+        {"recommend": "recommend", "collect": "collect"},
+    )
+    builder.add_edge("recommend", END)
+    builder.add_edge("collect", END)
+    return builder.compile(checkpointer=checkpointer)
 
-    return builder.compile()
+
+build_recommend_graph = build_explore_graph
