@@ -11,8 +11,8 @@ def get_llm(json_mode: bool = False) -> ChatOpenAI:
         model=settings.model,
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
-        timeout=90,
-        max_retries=1,
+        timeout=120,
+        max_retries=2,
     )
     if json_mode:
         kwargs["temperature"] = 0.3

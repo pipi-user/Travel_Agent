@@ -83,33 +83,36 @@ def _build_day(
     has_lunch = has_dinner = False
 
     for poi in pois:
+        ptype = poi.get("poi_type", "attraction")
+
         # 午餐插入
-        if not has_lunch and current.hour >= LUNCH_AT and poi["type"] == "attraction":
-            items.append(_meal("午餐", current, 60, "￥50"))
+        if not has_lunch and current.hour >= LUNCH_AT and ptype == "attraction":
+            items.append(_meal("午餐", current, 60, 50))
             current += timedelta(minutes=60)
             has_lunch = True
 
         # 晚餐插入
-        if not has_dinner and current.hour >= DINNER_HOUR and poi["type"] != "food":
-            items.append(_meal("晚餐", current, 60, "￥80"))
+        if not has_dinner and current.hour >= DINNER_HOUR and ptype != "food":
+            items.append(_meal("晚餐", current, 60, 80))
             current += timedelta(minutes=60)
             has_dinner = True
 
+        duration = int(poi.get("duration", 90) or 90)
         items.append(ItineraryItem(
             time=current.strftime("%H:%M"),
-            type=poi["type"],
+            type=ptype,
             poi_id=poi["id"],
             activity=poi["name"],
             location=poi.get("address", ""),
-            cost=poi.get("cost", "暂无"),
-            duration_min=poi.get("duration_min", 90),
-            note=poi.get("reason", ""),
+            cost=float(poi.get("cost", 0) or 0),
+            duration_min=duration,
+            note=poi.get("desc", ""),
         ))
-        current += timedelta(minutes=poi.get("duration_min", 90) + step)
+        current += timedelta(minutes=duration + step)
 
     # 兜底：晚餐
     if not has_dinner and pois:
-        items.append(_meal("晚餐", current, 60, "￥80"))
+        items.append(_meal("晚餐", current, 60, 80))
 
     # 回酒店
     if hotel:
@@ -137,7 +140,7 @@ def _build_day(
     return day
 
 
-def _meal(label: str, when: datetime, dur: int, cost: str) -> ItineraryItem:
+def _meal(label: str, when: datetime, dur: int, cost: float) -> ItineraryItem:
     return ItineraryItem(
         time=when.strftime("%H:%M"),
         type="food",
@@ -148,24 +151,20 @@ def _meal(label: str, when: datetime, dur: int, cost: str) -> ItineraryItem:
 
 
 def _intensity(n: int) -> str:
-    if n <= 3: return "轻松"
-    if n <= 6: return "适中"
+    if n <= 3:
+        return "轻松"
+    if n <= 6:
+        return "适中"
     return "紧凑"
 
 
-def _sum_cost(items: list[ItineraryItem]) -> int:
-    total = 0
-    for it in items:
-        c = str(it.cost).replace("￥", "").replace("元", "").strip()
-        try:
-            total += int(float(c))
-        except (ValueError, TypeError):
-            pass
-    return total
+def _sum_cost(items: list[ItineraryItem]) -> float:
+    """所有 item 的 cost 求和（现在 cost 已是数值）。"""
+    return sum(float(it.cost or 0) for it in items)
 
 
 def _route_hint(pois: list[dict]) -> str:
-    names = [p["name"] for p in pois if p["type"] == "attraction"]
+    names = [p["name"] for p in pois if p.get("poi_type") == "attraction"]
     if len(names) < 2:
         return ""
     return " → ".join(names)

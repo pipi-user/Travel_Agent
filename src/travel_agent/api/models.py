@@ -23,7 +23,8 @@ class CityCandidate(BaseModel):
     reason: str = ""                   # 一句话推荐
     image_url: str = ""
     intro: str = ""                    # LLM 生成的简短介绍
-
+    tags: list[str] = []          # ⭐ 新增
+    daily_cost: int = 0     
 
 class ExploreCitiesResponse(BaseModel):
     candidates: list[CityCandidate] = Field(default_factory=list)

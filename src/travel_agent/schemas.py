@@ -103,3 +103,38 @@ class RouteResponse(BaseModel):
     days: list[RouteDay] = Field(default_factory=list)
     hotel_info: Optional[dict] = None
     total_cost: float = 0.0
+
+
+# ============ 行程编排（供 arranger 使用）============
+
+class ItineraryItem(BaseModel):
+    """行程中的单个活动项。"""
+    time: str = ""                     # "09:00"
+    type: str = "attraction"           # attraction / food / hotel
+    poi_id: str = ""
+    activity: str = ""
+    location: str = ""
+    cost: float = 0.0                  # 数值，前端展示时格式化
+    duration_min: int = 90
+    note: str = ""
+
+
+class ItineraryDay(BaseModel):
+    """一天的行程。"""
+    day: int
+    city: str = ""
+    hotel: str = ""
+    intensity: str = "适中"
+    items: list[ItineraryItem] = Field(default_factory=list)
+    transport_note: str = ""
+    daily_cost: float = 0.0
+    map_points: list[dict] = Field(default_factory=list)
+
+
+class ItineraryResult(BaseModel):
+    """完整行程编排结果。"""
+    days: list[ItineraryDay] = Field(default_factory=list)
+    total_cost: float = 0.0
+    summary: str = ""
+    map_center: dict = Field(default_factory=dict)
+    unscheduled: list[str] = Field(default_factory=list)
