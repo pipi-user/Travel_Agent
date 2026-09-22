@@ -4,8 +4,11 @@
     uv run uvicorn travel_agent.api:app --reload
 """
 import logging
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .routes import memory
 from .routes import explore
@@ -17,9 +20,20 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Travel Agent API", version="2.0.0")
 
+# ⭐ 城市图片静态目录
+CITY_IMG_DIR = Path("data/city_images")
+CITY_IMG_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static/city", StaticFiles(directory=str(CITY_IMG_DIR)), name="city-images")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
