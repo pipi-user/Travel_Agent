@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 # 强度 → 每日 POI 数量范围
 INTENSITY_RULES: dict[str, dict] = {
-    "边走边躺":     {"min": 2, "max": 3},
-    "莫名其妙地玩": {"min": 4, "max": 5},
+    "边走边躺":     {"min": 3, "max": 5},
+    "莫名其妙地玩": {"min": 4, "max": 6},
     "死了都要逛":   {"min": 6, "max": 8},
 }
 
