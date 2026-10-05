@@ -1,9 +1,9 @@
 """城市元数据 + 距离计算。
 
-数据源：
-  - data/cities.json   372 个城市的坐标
-  - CORE_CITIES        30 个核心城市的完整元数据
-  - 其他城市走默认值
+优先级：
+  1. data/city_meta.json（LLM 生成的 372 城市画像）
+  2. CORE_CITIES（30 个核心城市硬编码）
+  3. 默认值
 """
 import json
 import math
@@ -11,10 +11,12 @@ from functools import lru_cache
 from pathlib import Path
 
 CITIES_FILE = Path("data/cities.json")
+CITY_META_FILE = Path("data/city_meta.json")
 
 DEFAULT_TAGS = ["城市", "人文"]
 DEFAULT_DAILY_COST = 400
 DEFAULT_BASE_SCORE = 6.5
+
 
 CORE_CITIES: dict[str, dict] = {
     "北京": {"tags": ["历史", "文化", "古迹", "博物馆", "皇家", "胡同"], "daily_cost": 600, "base_score": 9.3},
@@ -57,6 +59,17 @@ def _load_coords() -> dict:
     return json.loads(CITIES_FILE.read_text(encoding="utf-8"))
 
 
+@lru_cache(maxsize=1)
+def _load_meta_json() -> dict:
+    """加载 LLM 生成的城市画像。"""
+    if not CITY_META_FILE.exists():
+        return {}
+    try:
+        return json.loads(CITY_META_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def get_all_cities() -> list[str]:
     return list(_load_coords().keys())
 
@@ -83,8 +96,18 @@ def distance_km(city1: str, city2: str) -> float:
 
 
 def get_meta(city: str) -> dict:
+    """城市元数据。优先级：
+      1. LLM 生成的 city_meta.json
+      2. 硬编码的 CORE_CITIES
+      3. 默认值
+    """
+    json_meta = _load_meta_json()
+    if city in json_meta:
+        return json_meta[city]
+
     if city in CORE_CITIES:
         return CORE_CITIES[city]
+
     return {
         "tags": DEFAULT_TAGS,
         "daily_cost": DEFAULT_DAILY_COST,

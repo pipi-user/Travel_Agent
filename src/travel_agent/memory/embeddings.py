@@ -8,7 +8,7 @@ from ..config import settings
 # 阿里百炼：text-embedding-v3（1536 维）
 # OpenAI：text-embedding-3-small（1536 维）
 EMBED_MODEL = "text-embedding-v3"
-EMBED_DIM = 1536
+EMBED_DIM = 1024
 
 _emb = None
 
@@ -40,9 +40,12 @@ def embed(text: str) -> list[float]:
         vec = _get().embed_query(text[:8000])
         cache_set(key, vec)
         return vec
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"[embed] 失败: {e}")
+        traceback.print_exc()
         return [0.0] * EMBED_DIM
-
+       
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
     """批量向量化。"""

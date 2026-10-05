@@ -63,7 +63,7 @@ def recommend_cities(
 
         daily_remaining = remaining / days
         city_daily_total = meta["daily_cost"] * companions
-        hard = city_daily_total * 0.75
+        hard = city_daily_total * 0.85
 
         if daily_remaining < hard:
             continue

@@ -144,12 +144,23 @@ def search_pois(query: str, city: str = "", k: int = 10) -> list[dict]:
             "lng": lng,
             "image_url": img,
             "address": addr,
-            "score": round(1.0 - float(dist), 3),
+            "_raw_dist": float(dist),      # ⭐ 临时存原始距离
         })
         if len(results) >= k:
             break
 
     conn.close()
+
+    # ⭐ 归一化：把距离映射到 [0.6, 0.95]
+    if results:
+        dists = [r["_raw_dist"] for r in results]
+        d_min, d_max = min(dists), max(dists)
+        span = (d_max - d_min) if d_max > d_min else 1.0
+        for r in results:
+            norm = 1.0 - (r["_raw_dist"] - d_min) / span
+            r["score"] = round(0.6 + norm * 0.35, 3)
+            del r["_raw_dist"]
+
     return results
 
 
