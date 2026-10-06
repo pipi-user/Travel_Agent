@@ -14,7 +14,8 @@ from .routes import memory
 from .routes import explore
 from .routes import plan
 from .routes import inspire
-# from .routes import target  # 暂时禁用，缺少模型定义
+from .routes import target_chat
+# from .routes import target  # 旧版表单，已用 target_chat 替代
 
 logging.basicConfig(level=logging.INFO)
 
@@ -44,6 +45,7 @@ app.include_router(plan.router,    prefix="/api/plan",    tags=["plan"])
 # app.include_router(target.router,  prefix="/api/target",  tags=["target"])
 app.include_router(memory.router,  prefix="/api/memory",  tags=["memory"])
 app.include_router(inspire.router, prefix="/api/inspire", tags=["inspire"])
+app.include_router(target_chat.router, prefix="/api/target", tags=["target"])
 
 
 @app.get("/")

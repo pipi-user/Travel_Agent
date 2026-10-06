@@ -65,6 +65,53 @@ AMAP_PAGES_PER_KEYWORD = 2
 AMAP_PAGE_SIZE = 25
 AMAP_SLEEP = 0.4
 
+# ══════════════════════════════════════════════════════
+# 酒店费用估算（高德不返回酒店房价，按类型 + 城市估算）
+# ══════════════════════════════════════════════════════
+
+# 一线/新一线城市（酒店价格偏高）
+_TIER1_CITIES = {
+    "北京", "上海", "广州", "深圳", "成都", "杭州", "重庆",
+    "西安", "南京", "苏州", "武汉", "天津", "长沙", "郑州",
+    "东莞", "佛山", "青岛", "昆明", "宁波", "无锡",
+}
+
+# 旅游热门城市（旺季溢价）
+_HOT_CITIES = {"三亚", "丽江", "大理", "厦门", "拉萨", "西双版纳"}
+
+
+def _estimate_hotel_price(hotel: dict, city: str) -> float:
+    """根据酒店名称/标签 + 城市等级估算单晚房价（元）。"""
+    name = hotel.get("name", "")
+    tags = hotel.get("tags", [])
+    tag_str = " ".join(tags)
+    combined = name + tag_str
+
+    # ── 按类型匹配基础价格 ──
+    if any(kw in combined for kw in ["五星", "豪华", "度假", "国际", "万豪", "希尔顿", "洲际", "丽思"]):
+        base = 800
+    elif any(kw in combined for kw in ["精品", "设计", "boutique"]):
+        base = 500
+    elif any(kw in combined for kw in ["民宿", "客栈", "公寓"]):
+        base = 280
+    elif any(kw in combined for kw in ["青旅", "旅舍", " hostel"]):
+        base = 80
+    elif any(kw in combined for kw in ["连锁", "快捷", "如家", "汉庭", "7天", "锦江之星", "全季", "亚朵"]):
+        base = 220
+    elif any(kw in combined for kw in ["温泉", "度假村"]):
+        base = 600
+    else:
+        base = 350  # 普通酒店/宾馆
+
+    # ── 城市系数 ──
+    if city in _HOT_CITIES:
+        base = int(base * 1.3)
+    elif city in _TIER1_CITIES:
+        base = int(base * 1.15)
+
+    return float(base)
+
+
 MAX_ATTRACTIONS = 100
 MAX_FOODS = 100
 MAX_HOTELS = 50
@@ -133,6 +180,11 @@ def _collect_city_pool(city: str) -> dict:
     attractions = [_to_poi_dict(p, "attraction", city) for p in raw_attractions]
     foods = [_to_poi_dict(p, "food", city) for p in raw_foods]
     hotels_raw = [_to_poi_dict(p, "hotel", city) for p in raw_hotels]
+
+    # 酒店费用估算：高德不返回酒店房价，按类型 + 城市估算
+    for h in hotels_raw:
+        if h.get("cost", 0) == 0:
+            h["cost"] = _estimate_hotel_price(h, city)
 
     # 去重
     attractions = _dedup_by_location(attractions)
@@ -203,6 +255,9 @@ def _apply_user_constraints(
     # HotelPOI
     hotels: list[dict] = []
     for h in hotels_filtered:
+        # 兜底：如果缓存中 cost=0，重新估算
+        if h.get("cost", 0) == 0:
+            h["cost"] = _estimate_hotel_price(h, city)
         poi = POICard(**{k: v for k, v in h.items() if k in POICard.model_fields})
         hotel_poi = HotelPOI.from_poi(poi, days, companions)
         hotels.append(hotel_poi.model_dump())
@@ -213,12 +268,16 @@ def _apply_user_constraints(
         card = POICard(**{k: v for k, v in p.items() if k in POICard.model_fields})
         pois.append(card.model_dump())
 
-    # 预生成行程
+    # 预生成行程（传入第一个酒店位置作为锚点）
+    hotel_lat = hotels[0].get("lat") if hotels else None
+    hotel_lng = hotels[0].get("lng") if hotels else None
     initial_itinerary = generate_initial_itinerary(
         attractions=attractions,
         foods=foods,
         days=days,
         intensity=intensity,
+        hotel_lat=hotel_lat,
+        hotel_lng=hotel_lng,
     )
 
     return {

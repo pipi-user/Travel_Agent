@@ -31,12 +31,14 @@ async def plan_route(req: RouteRequest):
 
     for day_schedule in req.slots:
         day_num = day_schedule.day
-        # 提取当天有序 POI 列表
+        # 提取当天有序 POI 列表（保留 period 字段）
         day_items = []
         for slot_item in day_schedule.items:
             poi_info = poi_map.get(slot_item.poi_id, {})
             if poi_info:
-                day_items.append(poi_info)
+                # 合并 POI 数据和时段信息
+                item = {**poi_info, "period": slot_item.period}
+                day_items.append(item)
 
         if not day_items:
             route_days.append(RouteDay(day=day_num))
@@ -67,8 +69,11 @@ async def plan_route(req: RouteRequest):
             daily_cost=daily_cost,
         ))
 
-    # 酒店信息
+    # 酒店信息 + 住宿费用
     hotel_info = req.hotel if req.hotel else None
+    if hotel_info:
+        hotel_cost = hotel_info.get("total_accommodation_cost", 0) or hotel_info.get("single_night_price", 0) * req.days
+        total_cost += hotel_cost
 
     return RouteResponse(
         city=req.city,

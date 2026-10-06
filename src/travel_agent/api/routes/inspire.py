@@ -8,9 +8,10 @@ import logging
 import re
 import uuid
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ...llm import get_llm
@@ -135,6 +136,11 @@ def _enrich_itinerary(
                 "lng": float(poi.get("lng", 0) or 0),
                 "image_url": poi.get("image_url", ""),
             })
+        # 第一天加上酒店住宿费用
+        if day_schedule.get("day") == 1 and hotels:
+            hotel = hotels[0]
+            hotel_cost = float(hotel.get("total_accommodation_cost", 0) or hotel.get("single_night_price", 0) * len(initial))
+            total_cost += hotel_cost
         result.append({
             "day": day_schedule.get("day", 0),
             "items": day_items,
@@ -203,7 +209,10 @@ def _regex_extract(message: str, existing: dict, asking_field: str | None = None
             existing["origin"] = clean
 
     if "origin" not in existing or not existing["origin"]:
+        # 匹配"从/去/到/前往 + 城市" 或 "城市 + 出发/出发地"
         m = re.search(r"(?:去|从|到|出发|前往)\s*([\u4e00-\u9fa5]{2,4})", msg)
+        if not m:
+            m = re.search(r"([\u4e00-\u9fa5]{2,4})\s*(?:出发|出发地)", msg)
         if m:
             c = m.group(1)
             for city in _COMMON_CITIES:
@@ -234,9 +243,16 @@ def _regex_extract(message: str, existing: dict, asking_field: str | None = None
                 existing["budget"] = int(m.group(1))
 
     if "days" not in existing or not existing["days"]:
+        # 阿拉伯数字：玩3天 / 3天
         m = re.search(r"(?:玩|待|呆|旅游)?\s*(\d{1,2})\s*天", msg)
         if m:
             existing["days"] = int(m.group(1))
+        else:
+            # 中文数字：三天 / 玩三天 / 三天两夜
+            cn_map = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+            m = re.search(r"(?:玩|待|呆|旅游)?\s*([\u4e00-\u9fa5])\s*天", msg)
+            if m and m.group(1) in cn_map:
+                existing["days"] = cn_map[m.group(1)]
 
     if "companions" not in existing or not existing["companions"]:
         m = re.search(r"(\d{1,2})\s*(?:人|个)", msg)
@@ -682,3 +698,197 @@ async def get_session(session_id: str):
     if not session:
         raise HTTPException(404, "会话不存在")
     return session
+
+
+# ─── SSE 流式对话（LangGraph 图驱动） ─────────────────
+
+def _sse_event(event_type: str, data: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _stream_chat(session_id: str, message: str) -> AsyncGenerator[str, None]:
+    """流式对话生成器 — LangGraph 图驱动。"""
+    session = _get_session(session_id)
+
+    if message and message.strip():
+        session["messages"].append({"role": "user", "content": message})
+
+    phase = session["phase"]
+    yield _sse_event("session", {"session_id": session_id})
+
+    try:
+        from ...inspire_graph import (
+            node_greeting, node_extract_info, node_ask_question,
+            node_recommend_cities, node_select_and_collect,
+            node_adjust_itinerary,
+        )
+
+        graph_state = {
+            "session_id": session_id,
+            "phase": phase,
+            "message": message,
+            "user_info": dict(session.get("user_info", {})),
+            "asking_field": session.get("asking_field"),
+            "cities": session.get("cities", []),
+            "selected_city": session.get("selected_city"),
+            "itinerary": session.get("itinerary"),
+            "user_profile": dict(session.get("user_profile", {})),
+            "memory_block": session.get("memory_block", ""),
+            "user_id": session.get("user_id", "demo"),
+            "tool_results": [],
+            "extracted": {},
+            "quick_actions": [],
+            "response_text": "",
+            "pois_result": {},
+            "events": [],
+            "error": None,
+            "messages_history": session.get("messages", [])[-10:],  # P6: 最近 10 条对话历史
+        }
+
+        if phase == "greeting":
+            graph_state = await node_greeting(graph_state)
+            session["phase"] = "collecting_info"
+            session["user_profile"] = graph_state.get("user_profile", {})
+            session["memory_block"] = graph_state.get("memory_block", "")
+
+        elif phase == "collecting_info":
+            graph_state = await node_extract_info(graph_state)
+            session["user_info"] = graph_state["user_info"]
+
+            from .inspire import _check_info_complete
+            complete, missing = _check_info_complete(graph_state["user_info"])
+
+            if complete:
+                session["phase"] = "recommending"
+                session["asking_field"] = None
+                graph_state = await node_recommend_cities(graph_state)
+                session["cities"] = graph_state.get("cities", [])
+            else:
+                graph_state = await node_ask_question(graph_state)
+                session["asking_field"] = graph_state["asking_field"]
+
+        elif phase == "recommending":
+            # 用户选择城市
+            selected_city = None
+            for city in session.get("cities", []):
+                if city["city"] in message:
+                    selected_city = city["city"]
+                    break
+
+            if not selected_city:
+                response_text = "没听清你想去哪儿，再说一次？或者直接点上面的卡片～"
+                for i in range(0, len(response_text), 3):
+                    graph_state["events"].append({"event": "text_chunk", "data": {"content": response_text[i:i+3]}})
+                graph_state["events"].append({"event": "quick_actions", "data": {"actions": [c["city"] for c in session.get("cities", [])[:3]]}})
+            else:
+                session["selected_city"] = selected_city
+                session["phase"] = "generating_itinerary"
+                graph_state["selected_city"] = selected_city
+                graph_state = await node_select_and_collect(graph_state)
+                session["itinerary"] = graph_state.get("itinerary")
+
+        elif phase == "generating_itinerary":
+            if "详细" in message or "查看" in message:
+                response_text = "这是详细行程：\n\n"
+                if session["itinerary"]:
+                    period_map = {"morning": "早上", "noon": "中午", "afternoon": "下午", "evening": "晚上"}
+                    for day in session["itinerary"]:
+                        response_text += f"**第{day['day']}天**\n"
+                        for item in day.get("items", []):
+                            n = item.get("name") or item.get("poi_id", "未知")
+                            p = item.get("period", "")
+                            response_text += f"  {period_map.get(p, '')}: {n}\n"
+                        response_text += "\n"
+                for i in range(0, len(response_text), 3):
+                    graph_state["events"].append({"event": "text_chunk", "data": {"content": response_text[i:i+3]}})
+                graph_state["events"].append({"event": "quick_actions", "data": {"actions": ["调整景点", "确认行程", "重新推荐城市"]}})
+            elif "确认" in message or "导出" in message:
+                try:
+                    from ...memory.memory_agent import extract_and_save
+                    uid = session.get("user_id", "demo")
+                    trip = {
+                        "city": session.get("selected_city"),
+                        "days": session["user_info"].get("days"),
+                        "companions": session["user_info"].get("companions"),
+                        "preferences": session["user_info"].get("preferences", []),
+                        "itinerary": session.get("itinerary", []),
+                    }
+                    extract_and_save(uid, trip, feedback=message)
+                    response_text = "行程已确认！这次我记住了 ✨"
+                except Exception:
+                    response_text = "行程已确认！可以截图保存 ✨"
+                for i in range(0, len(response_text), 3):
+                    graph_state["events"].append({"event": "text_chunk", "data": {"content": response_text[i:i+3]}})
+                graph_state["events"].append({"event": "quick_actions", "data": {"actions": ["重新开始", "换个城市"]}})
+            else:
+                # P1: 调用 LLM 智能调整行程
+                graph_state = await node_adjust_itinerary(graph_state)
+                if graph_state.get("itinerary"):
+                    session["itinerary"] = graph_state["itinerary"]
+                response_text = graph_state.get("response_text", "")
+
+        else:
+            response_text = "我们重新开始吧！你想去哪玩？"
+            session["phase"] = "greeting"
+            session["user_info"] = {}
+            session["asking_field"] = None
+            for i in range(0, len(response_text), 3):
+                graph_state["events"].append({"event": "text_chunk", "data": {"content": response_text[i:i+3]}})
+
+        for evt in graph_state["events"]:
+            yield _sse_event(evt["event"], evt["data"])
+        yield _sse_event("done", {"phase": graph_state.get("phase", phase)})
+
+    except Exception as e:
+        logger.exception("流式对话失败")
+        err_text = f"抱歉，出了点小问题：{str(e)}\n请重试～"
+        yield _sse_event("text_chunk", {"content": err_text})
+        yield _sse_event("done", {"phase": phase})
+
+    session["messages"].append({"role": "assistant", "content": message})
+    if len(session["messages"]) > 20:
+        session["messages"] = session["messages"][-20:]
+
+
+@router.post("/chat/stream")
+async def inspire_chat_stream(req: ChatRequest):
+    """SSE 流式对话端点。"""
+    session_id = req.session_id or str(uuid.uuid4())[:8]
+    return StreamingResponse(
+        _stream_chat(session_id, req.message),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ─── P8: 用户反馈 API ─────────────────────────────────
+
+class FeedbackRequest(BaseModel):
+    session_id: str
+    poi_name: str
+    city: str = ""
+    feedback: Literal["liked", "disliked"]
+    reason: str = ""
+
+
+@router.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """用户反馈：点赞/踩某个 POI，写入记忆。"""
+    from ...memory.memory_agent import mark_liked, mark_disliked
+
+    user_id = req.session_id
+    if req.feedback == "liked":
+        count = mark_liked(user_id, req.poi_name, req.city, req.reason)
+    else:
+        count = mark_disliked(user_id, req.poi_name, req.city, req.reason)
+
+    return {
+        "status": "ok",
+        "feedback": req.feedback,
+        "poi": req.poi_name,
+        "saved": count,
+    }

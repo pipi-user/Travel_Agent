@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ..models import (
     ExploreCitiesRequest, ExploreCitiesResponse,
@@ -60,3 +61,51 @@ async def explore_pois(req: ExplorePoisRequest):
         hotels=result.get("hotels", []),
         initial_itinerary=result.get("initial_itinerary", []),
     )
+
+
+class ReplanRequest(BaseModel):
+    """重新规划行程请求。"""
+    city: str
+    hotel_id: str
+    pois: list[dict]
+    hotels: list[dict]
+    days: int
+
+
+@router.post("/replan")
+async def replan_itinerary(req: ReplanRequest):
+    """根据选中的酒店重新规划行程。
+
+    以酒店位置为锚点，重新分配景点到各时段。
+    """
+    from ...agents.itinerary_planner import generate_initial_itinerary
+
+    try:
+        # 找到选中的酒店
+        hotel = next((h for h in req.hotels if h["id"] == req.hotel_id), None)
+        if not hotel:
+            raise HTTPException(404, "酒店不存在")
+
+        # 分离景点和餐食
+        attractions = [p for p in req.pois if p.get("poi_type") == "attraction"]
+        foods = [p for p in req.pois if p.get("poi_type") == "food"]
+
+        # 重新生成行程（传入酒店位置作为参考）
+        new_itinerary = generate_initial_itinerary(
+            attractions=attractions,
+            foods=foods,
+            days=req.days,
+            intensity="莫名其妙地玩",  # 默认强度
+            hotel_lat=hotel.get("lat"),
+            hotel_lng=hotel.get("lng"),
+        )
+
+        return {
+            "itinerary": new_itinerary,
+            "hotel": hotel,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("replan failed")
+        raise HTTPException(500, "重新规划失败")

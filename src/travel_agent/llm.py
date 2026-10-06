@@ -1,3 +1,4 @@
+from typing import AsyncIterator
 from langchain_openai import ChatOpenAI
 from .config import settings
 
@@ -41,3 +42,18 @@ def get_reasoning_llm(json_mode: bool = False) -> ChatOpenAI:
     else:
         kwargs["temperature"] = 0.6
     return ChatOpenAI(**kwargs)
+
+
+async def stream_llm(prompt: str, llm: ChatOpenAI | None = None) -> AsyncIterator[str]:
+    """流式 LLM 输出，逐 token yield 文本。
+
+    用法：
+        async for token in stream_llm("你好"):
+            yield token
+    """
+    if llm is None:
+        llm = get_llm()
+    async for chunk in llm.astream(prompt):
+        token = chunk.content if hasattr(chunk, "content") else str(chunk)
+        if token:
+            yield token
